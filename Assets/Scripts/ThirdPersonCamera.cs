@@ -1,99 +1,183 @@
-﻿using System.Collections;
-using System.Collections.Generic;
-using UnityEngine;
+﻿using UnityEngine;
 
-[RequireComponent(typeof(Camera))]
 public class ThirdPersonCamera : MonoBehaviour
 {
-    private Vector2 rotation;
-    private float cameraZoomOffsetX;
-    private float cameraZoomOffsetZ;
+    [SerializeField]private Transform target = null;
 
-    [Header("Player Transform")]
-    [SerializeField] private Transform player = null;
-    [Header("General Settings")]
-    [SerializeField] private bool useRightClickToRotateCamera = false;
-    [SerializeField] private bool cameraControlsPlayerRotation = false;
-    [SerializeField] private bool useRightClickToRotatePlayer = false;
-    [Header("Camera rotation")]
-    [SerializeField] private float cameraRotationSpeed = 4.0f;
-    [SerializeField] private float verticalRotationLock = 60.0f;
-    [SerializeField] private Vector3 cameraOffset = new Vector3(6, 0, 6);
-    [Header("Camera zoom")]
-    [SerializeField] private float zoomSpeed = 5.0f;
-    [SerializeField] private float zoomMinDistance = 2.0f;
-    [SerializeField] private float zoomMaxDistance = 8.0f;
-    [Header("Camera Movement")]
-    [Range(0.1f, 0.9f)]
-    [SerializeField] private float cameraMoveLerpSpeed = 0.1f;
+    [SerializeField]private float targetHeight = 1.7f;
+    [SerializeField]private float distance = 5.0f;
+    [SerializeField]private float offsetFromWall = 0.1f;
+
+    [SerializeField]private float maxDistance = 20.0f;
+    [SerializeField]private float minDistance = 0.6f;
+    [SerializeField]private float speedDistance = 5.0f;
+
+    [SerializeField]private float xSpeed = 200.0f;
+    [SerializeField]private float ySpeed = 200.0f;
+
+    [SerializeField]private int yMinLimit = -40;
+    [SerializeField]private int yMaxLimit = 80;
+
+    [SerializeField]private int zoomRate = 50;
+
+    [SerializeField]private float rotationDampening = 3.0f;
+    [SerializeField]private float zoomDampening = 5.0f;
+
+    [SerializeField]private LayerMask collisionLayers = -1;
+
+    private float xDeg = 0.0f;
+    private float yDeg = 0.0f;
+    private float currentDistance;
+    private float desiredDistance;
+    private float correctedDistance;
+
+    private Vector2 movementInput;
+    private Vector2 mouseInput;
+
+    private float scrollWheelInput;
+
+    private bool rightMouseButtonDown;
+    private bool leftMouseButtonDown;
+
+    private readonly string horizontalMovementName = "Horizontal";
+    private readonly string verticalMovementName = "Vertical";
+
+    private readonly string mouseXName = "Mouse X";
+    private readonly string mouseYName = "Mouse Y";
+
+    private readonly string scrollWheelAxisName = "Mouse ScrollWheel";
+
+    private Vector3 targetOffset;
+    private Quaternion newCameraRotation;
+    private Vector3 newCameraPosition;
+    private Vector3 trueTargetPosition;
 
     private void Start()
     {
-        cameraZoomOffsetX = cameraOffset.x;
-        cameraZoomOffsetZ = cameraOffset.z;
+        Vector3 angles = transform.eulerAngles;
+        xDeg = angles.x;
+        yDeg = angles.y;
+
+        currentDistance = distance;
+        desiredDistance = distance;
+        correctedDistance = distance;
+    }
+
+    private void Update()
+    {
+        UpdateInput();
     }
 
     private void LateUpdate()
     {
-        if (!useRightClickToRotateCamera || (useRightClickToRotateCamera && Input.GetMouseButton(1)))
+
+        if(!target)
         {
-            SetRotation();
+            return;
         }
 
-        SetCameraZoom();
-
-        Vector3 newCameraLocation = GetCameraLocation();
-
-        transform.position = Vector3.Lerp(transform.position, newCameraLocation, cameraMoveLerpSpeed);
-        transform.LookAt(player);
-    }
-
-    private void SetRotation()
-    {
-        rotation.y += Input.GetAxis("Mouse X") * cameraRotationSpeed;
-        rotation.x += -Input.GetAxis("Mouse Y") * cameraRotationSpeed;
-        rotation.x = Mathf.Clamp(rotation.x, -verticalRotationLock, verticalRotationLock);
-    }
-
-    private void SetCameraZoom()
-    {
-        cameraZoomOffsetX += -Input.GetAxis("Mouse ScrollWheel") * zoomSpeed;
-        cameraZoomOffsetZ += -Input.GetAxis("Mouse ScrollWheel") * zoomSpeed;
-
-        cameraZoomOffsetX = Mathf.Clamp(cameraZoomOffsetX, zoomMinDistance, zoomMaxDistance);
-        cameraZoomOffsetZ = Mathf.Clamp(cameraZoomOffsetZ, zoomMinDistance, zoomMaxDistance);
-
-        cameraOffset = new Vector3(cameraZoomOffsetX, cameraOffset.y, cameraZoomOffsetZ);
-    }
-
-    private Vector3 GetCameraLocation()
-    {
-        if(cameraControlsPlayerRotation || (useRightClickToRotatePlayer && Input.GetMouseButton(1)))
+        if (leftMouseButtonDown || rightMouseButtonDown)
         {
-            player.rotation = Quaternion.Euler(0, rotation.y, 0);
+            SetDegreesBasedOnMouseMovement();
         }
-        Vector3 newLocation = player.position - (Quaternion.Euler(rotation.x, rotation.y, 0) * cameraOffset);
-
-        newLocation = CheckForCameraObstruction(newLocation);
-
-        return newLocation;
-    }
-
-    private Vector3 CheckForCameraObstruction(Vector3 cameraLocation)
-    {
-        RaycastHit hit;
-
-        if (Physics.Linecast(player.position, cameraLocation, out hit))
+        else if (movementInput.x != 0 || movementInput.y != 0)
         {
-            Debug.Log(hit.collider.transform.name);
-            cameraLocation = hit.point;
+            RotateBackToBehindPlayer();
         }
 
-        return cameraLocation;
+        CalculateDesiredDistance();
+        CalculateNewCameraRotation();
+        CalculateDesiredPosition();
+
+        bool isCorrected = SetCorrectedDistanceOnCameraObstruction();
+
+        CalculateCurrentDistance(isCorrected);
+        CalculateDesiredPositionBasedOnCurrentDistance();
+
+        transform.rotation = newCameraRotation;
+        transform.position = newCameraPosition;
     }
 
-    public bool UseCameraRotation()
+    private void UpdateInput()
     {
-        return !useRightClickToRotatePlayer;
+        movementInput.Set(Input.GetAxis(horizontalMovementName), Input.GetAxis(verticalMovementName));
+        mouseInput.Set(Input.GetAxis(mouseXName), Input.GetAxis(mouseYName));
+        scrollWheelInput = Input.GetAxis(scrollWheelAxisName);
+        leftMouseButtonDown = Input.GetMouseButton(0);
+        rightMouseButtonDown = Input.GetMouseButton(1);
+    }
+
+    private void SetDegreesBasedOnMouseMovement()
+    {
+        xDeg += mouseInput.x * xSpeed * 0.02f;
+        yDeg -= mouseInput.y * ySpeed * 0.02f;
+    }
+
+    private void RotateBackToBehindPlayer()
+    {
+        float targetRotationAngle = target.eulerAngles.y;
+        float currentRotationAngle = transform.eulerAngles.y;
+
+        xDeg = Mathf.LerpAngle(currentRotationAngle, targetRotationAngle, rotationDampening * Time.deltaTime);
+    }
+
+    private void CalculateDesiredDistance()
+    {
+        desiredDistance -= scrollWheelInput * Time.deltaTime * zoomRate * Mathf.Abs(desiredDistance) * speedDistance;
+        desiredDistance = Mathf.Clamp(desiredDistance, minDistance, maxDistance);
+        correctedDistance = desiredDistance;
+    }
+
+    private void CalculateNewCameraRotation()
+    {
+        yDeg = ClampAngle(yDeg, yMinLimit, yMaxLimit);
+        newCameraRotation = Quaternion.Euler(yDeg, xDeg, 0);
+    }
+    private float ClampAngle(float angle, float min, float max)
+    {
+        if (angle < -360)
+        {
+            angle += 360;
+        }
+        if (angle > 360)
+        {
+            angle -= 360;
+        }
+        return Mathf.Clamp(angle, min, max);
+    }
+
+    private void CalculateDesiredPosition()
+    {
+        targetOffset = new Vector3(0, -targetHeight, 0);
+        newCameraPosition = target.position - (newCameraRotation * Vector3.forward * desiredDistance + targetOffset);
+
+        trueTargetPosition = target.position - targetOffset;
+    }
+
+    private bool SetCorrectedDistanceOnCameraObstruction()
+    {
+        if (Physics.Linecast(trueTargetPosition, newCameraPosition, out RaycastHit collisionHit, collisionLayers.value))
+        {
+            correctedDistance = Vector3.Distance(trueTargetPosition, collisionHit.point) - offsetFromWall;
+            return true;
+        }
+
+        return false;
+    }
+
+    private void CalculateCurrentDistance(bool isCorrected)
+    {
+        // For smoothing purposes lerp distance only if either distance wasn't 
+        // corrected, or corrected distance is more than current distance
+        currentDistance = !isCorrected || correctedDistance > currentDistance 
+            ? Mathf.Lerp(currentDistance, correctedDistance, Time.deltaTime * zoomDampening) 
+            : correctedDistance;
+
+        // keep within limits
+        currentDistance = Mathf.Clamp(currentDistance, minDistance, maxDistance);
+    }
+    private void CalculateDesiredPositionBasedOnCurrentDistance()
+    {
+        newCameraPosition = target.position - (newCameraRotation * Vector3.forward * currentDistance + targetOffset);
     }
 }
